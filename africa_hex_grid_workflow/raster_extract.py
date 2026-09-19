@@ -156,13 +156,13 @@ def _process_grid_cell_stable(args: tuple) -> Dict[str, Optional[float]]:
     process boundaries.
 
     Args:
-        args: (geometry, raster_path, stat_methods, nodata_val, all_touched,
-               filter_negative)
+        args: (geometry, raster_path, stat_methods, nodata_values, all_touched,
+               filter_negative, valid_range)
 
     Returns:
         {stat_name: value_or_None} for each requested stat method.
     """
-    geometry, raster_path, stat_methods, nodata_val, all_touched, filter_negative = args
+    geometry, raster_path, stat_methods, nodata_values, all_touched, filter_negative, valid_range = args
 
     try:
         with rasterio.open(raster_path) as src:
@@ -179,11 +179,14 @@ def _process_grid_cell_stable(args: tuple) -> Dict[str, Optional[float]]:
             if filter_negative:
                 valid_mask &= masked_data >= 0
 
-            if nodata_val is not None:
+            for nodata_val in nodata_values:
                 if isinstance(nodata_val, float):
                     valid_mask &= ~np.isclose(masked_data, nodata_val, rtol=1e-5, atol=1e-8)
                 else:
                     valid_mask &= masked_data != nodata_val
+
+            if valid_range is not None:
+                valid_mask &= (masked_data >= valid_range[0]) & (masked_data <= valid_range[1])
 
             valid_data = masked_data[valid_mask]
 
@@ -382,7 +385,7 @@ def attach_rasters_batch(
             raise FileNotFoundError(f"Raster file not found: {raster_path}")
 
         stats_needed = list({_STAT_NAME_BY_METHOD.get(s["method"], "max") for s in sources})
-        nodata_val = nodata_values[0] if nodata_values else None
+        valid_range = sources[0]["source"].valid_range
         filter_negative = any(s["source"].filter_negative for s in sources)
 
         with rasterio.open(raster_path) as raster_src:
@@ -392,7 +395,7 @@ def attach_rasters_batch(
         grid_for_sampling = _reproject_if_needed(grid, raster_crs, raster_bounds)
 
         process_args = [
-            (geom, str(raster_path), stats_needed, nodata_val, True, filter_negative)
+            (geom, str(raster_path), stats_needed, nodata_values, True, filter_negative, valid_range)
             for geom in grid_for_sampling.geometry
         ]
 

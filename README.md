@@ -227,6 +227,11 @@ optional negative-value filtering for height/volume, and a valid-range
 check) before aggregating, since a hexagon can legitimately straddle a
 mix of valid and invalid pixels.
 
+The batched zonal-statistics path applies **all** configured NoData values,
+including zero for WSF3D volume, before calculating `V_mean` and `V_std`.
+The real Ndioum reproduction in the companion `africa_morphology_metrics`
+repository verifies that its 49-column grid matches the historical grid.
+
 ## Citation
 
 If you use this workflow, please also cite the underlying data sources:
