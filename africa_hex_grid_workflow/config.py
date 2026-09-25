@@ -113,8 +113,12 @@ class DataSource:
         output_column: Output column name (or column-name prefix, for
             multi-column sources) written to the grid.
         resampling: Aggregation method applied to valid pixels within each
-            hexagon: "max", "min", "mean", "median", "sum", "std", or
-            "categorical_percentage" (land cover only).
+            hexagon: "max", "min", "mean", "median", "sum", "std",
+            "categorical_percentage" (land cover only), or
+            "area_weighted_sum" (population only — apportions each pixel's
+            value across intersecting hexagons in proportion to its
+            covered area, rather than counting whole pixels that merely
+            touch the hexagon; see raster_extract.py).
         description: Human-readable description, used in logs.
         nodata_values: Explicit sentinel values to treat as NoData, in
             addition to the raster's own `nodata` tag, NaN, and inf.
@@ -271,7 +275,7 @@ DATA_SOURCES: Dict[str, DataSource] = {
     "population_2022": DataSource(
         source_pattern="sub_saharan_africa_ppp_100m_2022.tif",
         output_column="Pop2022",
-        resampling="sum",
+        resampling="area_weighted_sum",
         description="Population count from WorldPop 2022 (Sub-Saharan Africa)",
         nodata_values=(-99999,),
         scale_factor=1.0,
@@ -425,7 +429,7 @@ HEXAGON_RESAMPLING_CONFIG: Dict[str, Dict[str, object]] = {
     "building_volume_mean": {"method": "mean", "all_touched": True},
     "building_volume_max": {"method": "max", "all_touched": True},
     "building_volume_std": {"method": "std", "all_touched": True},
-    "population_2022": {"method": "sum", "all_touched": True},
+    "population_2022": {"method": "area_weighted_sum", "all_touched": True},
     "land_cover": {"method": "categorical_percentage", "all_touched": True},
     "lc_fraction_bare": {"method": "mean", "all_touched": True},
     "lc_fraction_builtup": {"method": "mean", "all_touched": True},

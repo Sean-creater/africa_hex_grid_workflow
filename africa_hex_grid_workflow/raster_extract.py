@@ -1,6 +1,6 @@
 """Zonal statistics extraction: attach per-hexagon raster values to a grid.
 
-Two extraction paths are used, both built on `rasterio.mask.mask`:
+Three extraction paths are used:
 
 - `extract_land_cover_percentages`: for the discrete land cover
   classification raster, computes the percentage of each class within a
@@ -8,11 +8,21 @@ Two extraction paths are used, both built on `rasterio.mask.mask`:
   produces 23 output columns per raster and isn't worth parallelizing the
   same way as the single-column sources).
 - `_process_grid_cell_stable` + `attach_rasters_batch`: for every
-  single-column source (building height/volume, population, land cover
-  cover-fraction layers), computed in parallel across worker processes via
-  `multiprocessing.Pool`. Output columns are grouped by the raster file that
-  backs them, so a single raster backing several output columns (e.g.
-  building height's max/mean/std/sum) is only masked once per grid cell.
+  single-column source using `rasterio.mask.mask` (building height/volume,
+  land cover cover-fraction layers), computed in parallel across worker
+  processes via `multiprocessing.Pool`. Output columns are grouped by the
+  raster file that backs them, so a single raster backing several output
+  columns (e.g. building height's max/mean/std/sum) is only masked once
+  per grid cell.
+- `_area_weighted_sum_batch`: for population (`resampling="area_weighted_sum"`
+  sources), apportions each pixel's value across intersecting hexagons in
+  proportion to the pixel's covered area, via `exactextract`. This differs
+  from the `rasterio.mask.mask`-based sum above, which counts every pixel
+  that merely touches a hexagon at full weight (`all_touched=True`) — for
+  a raster whose pixel size is a non-trivial fraction of the hexagon's
+  area, that double-counts pixels shared between adjacent hexagons and
+  substantially overstates per-hexagon totals. Area-weighted apportionment
+  keeps the sum over all hexagons equal to the sum over the source pixels.
 """
 
 from __future__ import annotations
@@ -221,6 +231,72 @@ _STAT_NAME_BY_METHOD = {
 }
 
 
+def _area_weighted_sum_batch(
+    grid: gpd.GeoDataFrame,
+    raster_path: Path,
+    nodata_values: Tuple[float, ...],
+    valid_range: Optional[Tuple[float, float]],
+) -> np.ndarray:
+    """Area-weighted sum of raster values within each hexagon, via exactextract.
+
+    Unlike `_process_grid_cell_stable`'s `all_touched=True` sum, this
+    apportions each pixel's value across intersecting hexagons in
+    proportion to the pixel's covered area, so the sum over all hexagons
+    equals the sum over the source pixels (no double-counting of pixels
+    shared between adjacent hexagons).
+
+    Pixel-level filtering (explicit `nodata_values` beyond the raster's own
+    `nodata` tag, and `valid_range`) is applied before handing the raster to
+    exactextract: invalid pixels are rewritten to the raster's nodata value
+    in an in-memory copy, so exactextract's own nodata handling excludes
+    them from the weighted sum exactly as `_process_grid_cell_stable` does
+    for the other resampling methods.
+
+    Args:
+        grid: Grid GeoDataFrame, already reprojected to the raster's CRS.
+        raster_path: Path to the source raster.
+        nodata_values: Extra sentinel values (beyond the raster's own
+            `nodata` tag) to treat as NoData.
+        valid_range: (min, max) inclusive bounds; pixels outside this range
+            are treated as NoData.
+
+    Returns:
+        Array of per-hexagon sums, shape (len(grid),), NaN where no valid
+        pixels intersect the hexagon.
+    """
+    from exactextract import exact_extract
+    from exactextract.raster import RasterioRasterSource
+    from rasterio.io import MemoryFile
+
+    with rasterio.open(raster_path) as src:
+        data = src.read(1)
+        profile = src.profile.copy()
+        band_nodata = src.nodata
+
+    fill_value = band_nodata if band_nodata is not None else -9999.0
+    invalid = ~np.isfinite(data)
+    if band_nodata is not None:
+        invalid |= data == band_nodata
+    for extra_nodata in nodata_values:
+        invalid |= np.isclose(data, float(extra_nodata), rtol=1e-5, atol=1e-8)
+    if valid_range is not None:
+        lo, hi = valid_range
+        invalid |= (data < lo) | (data > hi)
+
+    data = np.where(invalid, fill_value, data)
+    profile.update(nodata=fill_value)
+
+    with MemoryFile() as mem:
+        with mem.open(**profile) as dst:
+            dst.write(data, 1)
+        with mem.open() as masked_src:
+            result = exact_extract(
+                RasterioRasterSource(masked_src), grid, ["sum"], output="pandas"
+            )
+
+    return result["sum"].to_numpy(dtype=np.float64)
+
+
 def attach_land_cover(
     grid: gpd.GeoDataFrame,
     raster_file: Path,
@@ -384,9 +460,15 @@ def attach_rasters_batch(
         if not Path(raster_path).exists():
             raise FileNotFoundError(f"Raster file not found: {raster_path}")
 
-        stats_needed = list({_STAT_NAME_BY_METHOD.get(s["method"], "max") for s in sources})
         valid_range = sources[0]["source"].valid_range
-        filter_negative = any(s["source"].filter_negative for s in sources)
+        area_weighted_methods = {s["method"] == "area_weighted_sum" for s in sources}
+        if len(area_weighted_methods) > 1:
+            raise ValueError(
+                f"{raster_path}: sources backed by the same raster cannot mix "
+                "area_weighted_sum with other resampling methods "
+                f"({[s['key'] for s in sources]})."
+            )
+        is_area_weighted = area_weighted_methods.pop()
 
         with rasterio.open(raster_path) as raster_src:
             raster_crs = raster_src.crs
@@ -394,17 +476,25 @@ def attach_rasters_batch(
 
         grid_for_sampling = _reproject_if_needed(grid, raster_crs, raster_bounds)
 
-        process_args = [
-            (geom, str(raster_path), stats_needed, nodata_values, True, filter_negative, valid_range)
-            for geom in grid_for_sampling.geometry
-        ]
-
-        logger.info("Processing %d cells using %d worker processes...", len(grid), n_workers)
-        with Pool(n_workers) as pool:
-            stats = pool.map(_process_grid_cell_stable, process_args)
+        if is_area_weighted:
+            logger.info("Processing %d cells (area-weighted sum, exactextract)...", len(grid))
+            aw_values = _area_weighted_sum_batch(
+                grid_for_sampling, raster_path, tuple(nodata_values), valid_range
+            )
+            stats = [{"sum": v if np.isfinite(v) else None} for v in aw_values]
+        else:
+            filter_negative = any(s["source"].filter_negative for s in sources)
+            stats_needed = list({_STAT_NAME_BY_METHOD.get(s["method"], "max") for s in sources})
+            process_args = [
+                (geom, str(raster_path), stats_needed, nodata_values, True, filter_negative, valid_range)
+                for geom in grid_for_sampling.geometry
+            ]
+            logger.info("Processing %d cells using %d worker processes...", len(grid), n_workers)
+            with Pool(n_workers) as pool:
+                stats = pool.map(_process_grid_cell_stable, process_args)
 
         for source in sources:
-            stat_name = _STAT_NAME_BY_METHOD.get(source["method"], "max")
+            stat_name = "sum" if is_area_weighted else _STAT_NAME_BY_METHOD.get(source["method"], "max")
             col_name = source["col_name"]
             scale_factor = source["scale_factor"]
 

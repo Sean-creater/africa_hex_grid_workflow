@@ -9,4 +9,5 @@ dependencies:
   - shapely>=2.0
   - numpy>=1.24
   - tqdm>=4.64
+  - exactextract>=0.2
   - pip

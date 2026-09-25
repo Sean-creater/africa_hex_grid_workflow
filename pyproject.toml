@@ -15,6 +15,7 @@ dependencies = [
     "shapely>=2.0.0",
     "numpy>=1.24.0",
     "tqdm>=4.64.0",
+    "exactextract>=0.2.0",
 ]
 
 [project.scripts]
