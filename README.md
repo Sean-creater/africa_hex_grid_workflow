@@ -40,16 +40,25 @@ pip install -e .   # optional, for the `africa-hex-grid` console entry point
 No raw or intermediate data is bundled in this repository. You must obtain
 your own copies of the following datasets and boundary files.
 
-| # | Dataset | Used for | Distributor |
-|---|---------|----------|--------------|
-| 1 | WSF3D — World Settlement Footprint 3D, v2 | Building height and volume | German Aerospace Center (DLR) |
-| 2 | Copernicus Global Land Cover 100 m, v3 | Land cover composition | Copernicus Land Monitoring Service / VITO |
-| 3 | WorldPop population, 100 m, 2022 | Population per hexagon | WorldPop (University of Southampton) |
-| 4 | AFRICAPOLIS 2020 | City/agglomeration boundaries | AFRICAPOLIS (OECD / e-Geopolis) |
-| 5 | Natural Earth (or equivalent) | Country boundaries | Natural Earth |
+| # | Dataset | Used for | Distributor | How to obtain |
+|---|---------|----------|--------------|----------------|
+| 1 | WSF3D — World Settlement Footprint 3D, v2 | Building height and volume (`H_*`, `V_*`) | German Aerospace Center (DLR) | `https://download.geoservice.dlr.de/WSF3D/` |
+| 2 | Copernicus Global Land Cover 100 m, v3 (2019 epoch) | Land cover percentages (`LC_*`), cover-fraction layers (`LCF_*`) | Copernicus Land Monitoring Service / VITO | `https://lcviewer.vito.be/download`. Expects the `PROBAV_LC100_global_v3.0.1_2019-nrt_*_EPSG-4326.tif` filenames as distributed by VITO. |
+| 3 | WorldPop population, 100 m, constrained, 2022 | Population per hexagon (`Pop2022`) | WorldPop (University of Southampton) | `https://www.worldpop.org`. Constrained, 100 m, Sub-Saharan Africa 2022; expects a filename of the form `sub_saharan_africa_ppp_100m_2022.tif`. |
+| 4 | AFRICAPOLIS 2020 | City/agglomeration boundaries (city-mode AOI) | AFRICAPOLIS (OECD / e-Geopolis) | `https://africapolis.org`. Any exported polygon layer (GPKG/GeoJSON/Shapefile) with an agglomeration-name column, an ISO3 column, and an ID column — see "Boundary file schema" below. |
+| 5 | Natural Earth (or equivalent) | Country-mode AOI definition, country lookup for city mode | Natural Earth | `https://www.naturalearthdata.com` (or your own country-boundary file). Needs a country-name column and, for city mode, an ISO alpha-3 column. |
 
-See the manuscript's Methods and Supplementary Information for exact source
-versions, file naming, and boundary-file schema requirements.
+### Boundary file schema expected by this code
+
+- **Country boundaries** (`--country-boundaries`): polygon layer with a
+  country-name column (configurable via `--country-name-column`, default
+  `NAME_0`) and, for city mode's country lookup, an `ISO` column with ISO3
+  codes.
+- **City/agglomeration boundaries** (`--city-boundaries`): polygon layer
+  with a city-name column (configurable via `--city-name-column`, default
+  `Agglomeration_Name`), an `ISO3` column, and an ID column named either
+  `Agglomeration_ID` or `agglosID` (used to disambiguate cities that share
+  a name).
 
 ### Preprocessing
 
